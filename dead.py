@@ -1,82 +1,80 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import numpy as np
 
-# --- Load Multiple Excel Files ---
-files = ["blue pearl deadstock1.xlsx", "blue pearl deadstock2.xlsx", "blue pearl deadstock3.xlsx"]  # update file names
-dfs = [pd.read_excel(f) for f in files]
-df = pd.concat(dfs, ignore_index=True)
+# ----------------- CONFIG -----------------
+st.set_page_config(page_title="Stock & Purchase Insights", layout="wide")
+st.title("📊 SAFA OUD MEHTA Stock & Purchase Insights")
+st.markdown("""
+This dashboard highlights risky stock and purchasing behavior:
+- **Dead Stock Risk** → Zero sales before July, purchased after July, still zero sales
+- **Over Purchased Risk** → Purchased quantity > avg sales, sales still low after July
+""")
 
-# --- Clean column names ---
+# ----------------- LOAD FILES -----------------
+df1 = pd.read_excel("safa purchase 1.xlsx")
+df2 = pd.read_excel("safa purchase 2.xlsx")
+df = pd.concat([df1, df2], ignore_index=True)
 df.columns = df.columns.str.strip()
 
-# --- Ensure numeric fields ---
-for col in ["Stock Value", "Stock", "Profit", "Margin%", "Total Sales", "Cost", "Selling", "LP Price"]:
-    if col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+# ----------------- SALES & STOCK CALC -----------------
+months = ["Apr, 2025","May, 2025","Jun, 2025","Jul, 2025","Aug, 2025","Sep, 2025"]
 
-# --- Handle negative stock for plotting ---
-df["Stock_clean"] = df["Stock"].clip(lower=0)
+df["Stock Value"] = df["Stock"] * df["Cost"]
+df["Sales Value"] = df["Total Sales"] * df["Selling"]
+df["Avg Sales Before July"] = df[["Apr, 2025","May, 2025","Jun, 2025"]].mean(axis=1)
+df["Sales After July"] = df[["Jul, 2025","Aug, 2025","Sep, 2025"]].sum(axis=1)
+df["LP Date"] = pd.to_datetime(df["LP Date"], errors="coerce")
+df["LP Month"] = df["LP Date"].dt.month
 
-# --- Dashboard Layout ---
-st.set_page_config(page_title="Dead Stock Dashboard", layout="wide")
-st.title("📊Blue Pearl Stock(Zero Sales and LP before 2025)")
-
-# --- KPIs at Top ---
-col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Total Dead Stock Items", f"{len(df):,}")
-col2.metric("Total Stock Qty", f"{df['Stock'].sum():,.0f}")
-col3.metric("Total Stock Value", f"{df['Stock Value'].sum():,.2f}")
-
-# --- High Priority Items (Top 10 by Stock Value) ---
-st.subheader("🚨 High Priority Items (Top 10 by Stock Value)")
-high_priority = df.nlargest(10, "Stock Value")
-priority_cols = [c for c in ["Item Bar Code","Item Name","Stock","Stock Value","Margin%","Profit",
-                             "Cost","Selling","LP Price","LP Date","LP Supplier"] if c in df.columns]
-st.table(high_priority[priority_cols])  # removed gradient to avoid matplotlib dependency
-
-# --- Top Items by Stock Value (Horizontal Bar Chart) ---
-st.subheader("Top 20 Items by Stock Value")
-top_items = df.nlargest(20, "Stock Value")
-fig1 = px.bar(
-    top_items, y="Item Name", x="Stock Value", orientation="h",
-    text="Stock Value", color="Stock Value", color_continuous_scale="Reds",
-    hover_data={
-        "Item Bar Code": True,
-        "Item Name": True,
-        "Stock": True,
-        "Stock Value": True,
-        "Margin%": True,
-        "Profit": True,
-        "Cost": True,
-        "Selling": True,
-        "LP Price": True
-    }
+# ----------------- RISK LOGIC -----------------
+# Dead Stock: Zero sales before July, purchased after July, still zero sales
+df["Dead Stock Risk"] = (
+    (df[["Apr, 2025","May, 2025","Jun, 2025"]].sum(axis=1) == 0) &
+    (df["LP Month"] >= 7) &
+    (df["Sales After July"] == 0)
 )
-fig1.update_layout(yaxis={'categoryorder':'total ascending'})
-st.plotly_chart(fig1, use_container_width=True)
 
-# --- Pie Chart: Category-wise Stock Value ---
-st.subheader("Stock Value by Category")
-if "Category" in df.columns:
-    category_df = df.groupby("Category")["Stock Value"].sum().reset_index()
-    fig2 = px.pie(
-        category_df, values="Stock Value", names="Category",
-        hover_data={"Stock Value": True},
-        color_discrete_sequence=px.colors.sequential.Reds
-    )
-    fig2.update_traces(textinfo="percent+label")
-    st.plotly_chart(fig2, use_container_width=True)
+# Over Purchased: Purchased after July, bought > avg sales, sales still low
+df["Over Purchased Risk"] = (
+    (df["LP Month"] >= 7) &
+    (df["LP Qty"] > df["Avg Sales Before July"]) &
+    (df["Sales After July"] < df["Avg Sales Before July"])
+)
 
+# ----------------- CATEGORY FILTER -----------------
+st.sidebar.header("Filter by Category")
+categories = st.sidebar.multiselect("Select Category", options=df["Category"].unique(), default=df["Category"].unique())
+filtered_df = df[df["Category"].isin(categories)]
 
+# ----------------- FINAL COLUMNS -----------------
+final_cols = [
+    "Item Bar Code","Item Name","Item No","Category",
+    "Stock","Stock Value","Total Sales","Sales Value",
+    "Avg Sales Before July","Sales After July",
+    "LP Qty","LP Date","LP Supplier","Margin%","Markup%"
+] + months + ["Dead Stock Risk","Over Purchased Risk"]
 
-# --- Detailed Data Table (Full Details) ---
-st.subheader("Detailed Dead Stock Items (Full Details)")
-detailed_cols = [c for c in ["Item Bar Code","Item Name","Item No","Stock","Stock Value","Margin%","Profit",
-                             "Cost","Selling","LP Price","LP Date","LP Supplier","CF","Unit","Category","Pre Return"] 
-                 if c in df.columns]
-st.dataframe(df[detailed_cols])
+# ----------------- DEAD STOCK -----------------
+dead_s_items = filtered_df[filtered_df["Dead Stock Risk"]]
+st.subheader("⚠️ Dead Stock Risk Items")
+if not dead_s_items.empty:
+    st.dataframe(dead_s_items[final_cols], use_container_width=True)
+    st.markdown("**Dead Stock Insights**")
+    st.markdown(f"- Total Items: **{len(dead_s_items)}**")
+    st.markdown(f"- Total Stock Value: **{dead_s_items['Stock Value'].sum():,.0f}**")
+    st.markdown(f"- Total Sales Value: **{dead_s_items['Sales Value'].sum():,.0f}**")
+else:
+    st.info("No items in Dead Stock Risk.")
 
-# --- Download Option ---
-csv = df[detailed_cols].to_csv(index=False).encode('utf-8')
-st.download_button("📥 Download Full Dead Stock Data", csv, "dead_stock_full.csv", "text/csv")
+# ----------------- OVER PURCHASED -----------------
+over_p_items = filtered_df[filtered_df["Over Purchased Risk"]]
+st.subheader("🚨 Over Purchased Risk Items")
+if not over_p_items.empty:
+    st.dataframe(over_p_items[final_cols], use_container_width=True)
+    st.markdown("**Over Purchased Insights**")
+    st.markdown(f"- Total Items: **{len(over_p_items)}**")
+    st.markdown(f"- Total Stock Value: **{over_p_items['Stock Value'].sum():,.0f}**")
+    st.markdown(f"- Total Sales Value: **{over_p_items['Sales Value'].sum():,.0f}**")
+else:
+    st.info("No items in Over Purchased Risk.")
